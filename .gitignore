@@ -1,0 +1,11 @@
+# pobusa-api .gitignore — v1.0.0
+
+venv/
+__pycache__/
+*.pyc
+db.sqlite3
+media/
+.env
+staticfiles/
+*.log
+.DS_Store

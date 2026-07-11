@@ -1,0 +1,36 @@
+[
+  {
+    "model": "pobusa.store",
+    "pk": 1,
+    "fields": {
+      "name": "GG's Trading Card Store",
+      "logo": "store_logos/gg_trading_card_store_logo.jpeg",
+      "registration_number": "TBD",
+      "address": "TBD",
+      "vat_registered": false,
+      "vat_number": "",
+      "sell_percent_default": "100.00",
+      "created_date": "2026-07-10T00:00:00Z"
+    }
+  },
+  {
+    "model": "pobusa.buypercenttier",
+    "pk": 1,
+    "fields": {
+      "store": 1,
+      "min_value": "0.00",
+      "max_value": "999.99",
+      "buy_percent": "80.00"
+    }
+  },
+  {
+    "model": "pobusa.buypercenttier",
+    "pk": 2,
+    "fields": {
+      "store": 1,
+      "min_value": "1000.00",
+      "max_value": null,
+      "buy_percent": "70.00"
+    }
+  }
+]
