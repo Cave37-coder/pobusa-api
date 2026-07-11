@@ -1,4 +1,8 @@
-# PoBuSA services.py — v1.7.0
+# PoBuSA services.py — v1.8.0
+# v1.8.0: PRODUCTION — switched POKEMART_API_BASE back to the real
+# api.pokebulk.co.za domain. The localhost:8000 value was only ever meant
+# for local dev testing and is completely unreachable from Railway's
+# servers, causing every card-search/card-lookup call to fail with a 500.
 # v1.7.0: fetch_card_data() now also returns variant — condition is
 # effectively a no-op on this dataset (defaults to NM almost everywhere),
 # variant is the real distinguishing field and must be captured everywhere
@@ -27,7 +31,7 @@ import requests
 from decimal import Decimal
 from .models import BuyPercentTier
 
-POKEMART_API_BASE = "http://127.0.0.1:8000"  # LOCAL DEV ONLY — see note above
+POKEMART_API_BASE = "https://api.pokebulk.co.za"  # production — stable custom domain
 
 
 def search_cards(query: str) -> dict:
