@@ -1,4 +1,5 @@
-# pobusa-api .gitignore — v1.0.0
+# pobusa-api .gitignore — v1.1.0
+# v1.1.0: added set_r2_env.ps1 -- holds real R2 credentials, never commit.
 
 venv/
 __pycache__/
@@ -6,6 +7,7 @@ __pycache__/
 db.sqlite3
 media/
 .env
+set_r2_env.ps1
 staticfiles/
 *.log
 .DS_Store

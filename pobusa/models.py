@@ -1,4 +1,25 @@
-# PoBuSA models.py — v1.6.0
+# PoBuSA models.py — v1.10.0
+# v1.10.0: added CatalogProduct.thumbnail_url (PoBuSA Checklist Phase 1,
+# item 5) -- populated by the new mirror_images_to_r2 command, R2-hosted
+# ~300px thumbnail, separate field from image_url so the TCGCSV source
+# URL is never overwritten.
+# v1.9.0: added StoreCustomProduct (PoBuSA Checklist Phase 1, item 4) --
+# New Product Entry, the persistent store-scoped upgrade of the old
+# "OFF-SITE STOCK" Buy screen box, for Single/Sealed/Accessory only
+# (General already has GeneralInventoryItem). Own auto-generated SKU
+# scheme (NPE-{store_id}-####), permission-gating on creation deferred
+# until the role-based access system exists (Phase 4).
+# v1.8.0: added CatalogProduct.barcode (PoBuSA Checklist Phase 1, item 3)
+# -- Sealed + Accessories only, never Singles, enforced via clean(). Null
+# (not blank) so multiple empty rows don't collide with the unique
+# constraint. GeneralInventoryItem.barcode already existed and needed no
+# change (see field comment for why that one's store-scoped and this one
+# isn't).
+# v1.7.0: added CatalogProduct.release_date (PoBuSA Checklist Phase 1, item
+# 2) -- sourced from TCGCSV group.publishedOn, drives the Set picker's
+# newest-first sort + era grouping on the front end. Composite (game,
+# release_date) index added for that query. Existing rows are null until
+# backfill_release_dates runs.
 # v1.6.0: added variant snapshot to CardStockLine, alongside name/card_set.
 # condition is effectively a no-op across pokemart-api's dataset (defaults
 # to NM almost everywhere); variant (Normal/Reverse Holo/Pokeball/etc) is
@@ -172,6 +193,80 @@ class GeneralInventoryItem(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class StoreCustomProduct(models.Model):
+    """PoBuSA Checklist Phase 1, item 4 -- New Product Entry. The persistent
+    upgrade of the old "OFF-SITE STOCK" Buy screen box (see serializers.py
+    v1.6.0 note: off-site items used to be a one-off typed name/price/qty
+    line with no catalog lookup and nothing kept afterward). This is the
+    reference-definition row for a Client's own Single/Sealed/Accessory
+    product that isn't in the shared CatalogProduct catalog -- it plays
+    the same role CatalogProduct plays for synced products, but is
+    store-scoped and private: never merged into CatalogProduct, never
+    visible to any other Client. General items (cooldrinks/etc) already
+    have their own equivalent in GeneralInventoryItem and aren't part of
+    this table.
+
+    Like CatalogProduct, this only defines the product -- actual buy-in
+    stock still lands on CardStockLine/SealedStockItem same as always
+    (both are snapshot-based and take a plain sku/name string, no FK back
+    to a catalog table, so no changes needed there to start referencing
+    a StoreCustomProduct's sku).
+
+    Business rule (not yet enforced here -- role-based access is
+    explicitly parked, PoBuSA Checklist Phase 4, item 14): creating a
+    NEW row here should be permission-gated; restocking an existing sku
+    via CardStockLine/SealedStockItem should stay open to any staff, and
+    must never be able to redefine the product itself. Enforce this once
+    the permission system exists.
+    """
+    PRODUCT_TYPE_CHOICES = [
+        ("single", "Single card"),
+        ("sealed", "Sealed product"),
+        ("accessory", "Accessory"),
+    ]
+
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name="custom_products")
+    product_type = models.CharField(max_length=10, choices=PRODUCT_TYPE_CHOICES)
+
+    # Required at creation alongside product_type, per the spec -- free
+    # text rather than a fixed choices list, since these are deliberately
+    # the items that fall outside the shared catalog's own taxonomy (e.g.
+    # a game name for a custom single, an accessory category label for a
+    # custom accessory, a product line for custom sealed).
+    sub_category = models.CharField(max_length=100)
+
+    name = models.CharField(max_length=255)
+
+    # PoBuSA's third SKU scheme (alongside pokemart-api's format for
+    # Pokemon and CatalogProduct.sku for everything else synced) --
+    # always system-generated on save(), never staff-typed, same
+    # editable=False contract as CatalogProduct.sku.
+    sku = models.CharField(max_length=60, unique=True, editable=False)
+
+    is_active = models.BooleanField(default=True)  # soft-hide, never hard-delete -- matches CatalogProduct
+    created_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["store", "product_type"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.sku:
+            last = StoreCustomProduct.objects.filter(store=self.store).order_by("-id").first()
+            next_num = 1
+            if last and last.sku:
+                try:
+                    next_num = int(last.sku.split("-")[-1]) + 1
+                except ValueError:
+                    next_num = StoreCustomProduct.objects.filter(store=self.store).count() + 1
+            self.sku = f"NPE-{self.store_id}-{next_num:04d}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.sku} - {self.name}"
 
 
 class Sale(models.Model):
@@ -363,7 +458,30 @@ class CatalogProduct(models.Model):
     name = models.CharField(max_length=255)
     set_name = models.CharField(max_length=255, blank=True)  # blank for accessories
     card_number = models.CharField(max_length=20, blank=True)  # singles only
-    variant = models.CharField(max_length=50, blank=True)  # singles only -- Normal/Holofoil/Reverse Holofoil/etc
+    variant = models.CharField(max_length=100, blank=True)  # singles only -- Normal/Holofoil/Reverse Holofoil/etc
+
+    # From TCGCSV's group.publishedOn -- the Set's release date, not this
+    # row's sync date (see last_synced below for that). Drives the Set
+    # picker's newest-first sort and era grouping on the front end
+    # (PoBuSA Checklist Phase 2, item 7). Null for accessories and any
+    # row synced before this field existed, until backfilled.
+    release_date = models.DateField(null=True, blank=True)
+
+    # Sealed + Accessories only -- Singles are never barcode-searchable
+    # (see PoBuSA Checklist Phase 1, item 3 side notes: a booster box or
+    # sleeve pack has one real-world UPC, a single card doesn't). TCGCSV
+    # supplies no barcode/UPC data at all, so this always starts empty --
+    # staff scan the physical item once at first buy-in and it's captured
+    # here permanently, shared across every Client since it's the same
+    # manufacturer barcode everywhere, not a per-store value (that's what
+    # makes this different from GeneralInventoryItem.barcode, which IS
+    # store-scoped because General items are each store's own custom
+    # product, not a shared catalog row). null=True (not just blank) so
+    # multiple empty rows don't collide with the unique constraint --
+    # only real, unique physical barcodes go in here. Enforced via
+    # clean() below, not a DB constraint, so a bad sync/import degrades
+    # to a validation error on save rather than crashing a whole sync run.
+    barcode = models.CharField(max_length=50, blank=True, null=True, unique=True)
 
     # Last-synced market price from TCGCSV. A reference price, same role as
     # PokemonProduct.price -- individual buy-in/sell prices are still
@@ -376,6 +494,15 @@ class CatalogProduct(models.Model):
     # local items". PoBuSA doesn't host images itself, just the pointer.
     image_url = models.URLField(max_length=500, blank=True)
 
+    # PoBuSA Checklist Phase 1, item 5 -- our own R2-hosted ~300px
+    # thumbnail, once mirror_images_to_r2 has processed this row's
+    # image_url. Kept separate from image_url (never overwritten) so the
+    # original TCGCSV source stays available as a fallback/regeneration
+    # source. Null until mirrored; the POS grid should prefer this field
+    # and fall back to image_url if it's empty (e.g. mirror hasn't run
+    # yet, or the download failed for that particular URL).
+    thumbnail_url = models.URLField(max_length=500, blank=True, null=True)
+
     is_active = models.BooleanField(default=True)  # soft-hide if TCGCSV drops something, never hard-delete
     last_synced = models.DateTimeField(null=True, blank=True)
 
@@ -383,7 +510,19 @@ class CatalogProduct(models.Model):
         indexes = [
             models.Index(fields=["product_type", "game"]),
             models.Index(fields=["name"]),
+            models.Index(fields=["game", "release_date"]),  # Set picker's newest-first sort, per game
         ]
+
+    def clean(self):
+        # Enforced here (ModelForm/admin validation path, and anywhere else
+        # that explicitly calls full_clean()) rather than in save() --
+        # sync_tcgcsv's bulk upsert calls .save() directly on ~300k rows
+        # per run and never touches barcode at all (TCGCSV has no barcode
+        # data), so forcing full_clean() on every save would add real
+        # overhead to that hot path for a rule it can never violate.
+        from django.core.exceptions import ValidationError
+        if self.barcode and self.product_type == "single":
+            raise ValidationError({"barcode": "Singles are never barcode-searchable -- only Sealed and Accessory products carry a barcode."})
 
     def __str__(self):
         return f"{self.sku} - {self.name}"
@@ -395,12 +534,25 @@ class TCGCSVSource(models.Model):
     through any Client-facing API, admin view, or serializer. Deliberately
     a separate table from CatalogProduct, not extra fields bolted onto it
     -- there is no serializer anywhere in this codebase that touches this
-    model, by design."""
+    model, by design.
+
+    tcgcsv_product_id is NOT unique alone -- TCGCSV's /products endpoint
+    returns one row per card, but its /prices endpoint can return MULTIPLE
+    rows for that same productId, one per subTypeName (Normal, Foil,
+    Showcase, Reverse Holofoil, etc), each with its own real price. A
+    single CatalogProduct row per productId was collapsing every variant
+    into one row and keeping only whichever price happened to be seen
+    first -- the real fix is one CatalogProduct per (productId, subtype)
+    pair, so uniqueness has to be on the pair, not productId alone."""
     product = models.OneToOneField(CatalogProduct, on_delete=models.CASCADE, related_name="tcgcsv_source")
     tcgcsv_category_id = models.PositiveIntegerField()
     tcgcsv_group_id = models.PositiveIntegerField()
-    tcgcsv_product_id = models.PositiveIntegerField(unique=True)
+    tcgcsv_product_id = models.PositiveIntegerField()
+    tcgcsv_subtype_name = models.CharField(max_length=100, blank=True, default="Normal")
     tcgcsv_group_name = models.CharField(max_length=255, blank=True)  # handy for debugging syncs only
 
+    class Meta:
+        unique_together = [("tcgcsv_product_id", "tcgcsv_subtype_name")]
+
     def __str__(self):
-        return f"{self.product.sku} -> tcgcsv:{self.tcgcsv_product_id}"
+        return f"{self.product.sku} -> tcgcsv:{self.tcgcsv_product_id} ({self.tcgcsv_subtype_name})"

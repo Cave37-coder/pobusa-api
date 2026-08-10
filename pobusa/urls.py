@@ -1,4 +1,7 @@
-# PoBuSA urls.py — v1.8.0
+# PoBuSA urls.py — v1.10.0
+# v1.10.0: added catalog browse endpoints (Phase 2, View 2 — Unified
+# Browse/Sell screen's nested dropdown + product grid)
+# v1.9.0: added stats endpoint (Phase 2, View 1 — Main/Landing Today/This-week panel)
 
 from django.urls import path
 from . import views
@@ -8,6 +11,8 @@ from . import export_views
 from . import branding_views
 from . import report_list_views
 from . import credit_note_views
+from . import stats_views
+from . import catalog_browse_views
 
 urlpatterns = [
     # Buy-in flow (now includes sealed product — see serializers.py v1.3.0)
@@ -32,6 +37,14 @@ urlpatterns = [
 
     # Client onboarding / branding
     path("stores/<int:store_id>/branding/", branding_views.store_branding, name="pobusa-store-branding"),
+
+    # Main/Landing stats (Today / This-week)
+    path("stores/<int:store_id>/stats/", stats_views.store_stats, name="pobusa-store-stats"),
+
+    # Unified Browse/Sell screen — catalog browse
+    path("catalog/browse-tree/", catalog_browse_views.browse_tree, name="pobusa-catalog-browse-tree"),
+    path("catalog/sets/", catalog_browse_views.sets_list, name="pobusa-catalog-sets"),
+    path("stores/<int:store_id>/catalog/browse/", catalog_browse_views.browse_products, name="pobusa-catalog-browse"),
 
     # Reports — list + manual send
     path("reports/<int:store_id>/", report_list_views.list_reports, name="pobusa-list-reports"),

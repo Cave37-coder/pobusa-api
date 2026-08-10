@@ -1,4 +1,11 @@
-# PoBuSA admin.py — v1.1.0
+# PoBuSA admin.py — v1.3.0
+# v1.3.0: registered StoreCustomProduct (PoBuSA Checklist Phase 1, item 4).
+# sku is readonly same as CatalogProduct's -- it's auto-generated in
+# save(), never staff-typed.
+# v1.2.0: registered Game, CatalogProduct, TCGCSVSource (PoBuSA Checklist
+# Phase 1, item 1). TCGCSVSource stays admin-only, same rule as models.py —
+# no serializer anywhere touches it; this registration is purely for Mike's
+# superuser access to eyeball/debug syncs, never exposed to Client staff.
 # v1.1.0: registered every model for admin visibility/testing, not just
 # DailyReportFile. Useful for eyeballing data and creating test records
 # directly without going through the API — the "Send selected reports"
@@ -8,7 +15,8 @@ from django.contrib import admin
 from .models import (
     Store, BuyPercentTier, Invoice, CardStockLine, SealedStockItem,
     GeneralInventoryItem, Sale, SaleItem, CreditNote, DailySalesSummary,
-    AccountingExportSettings, StoreStaff,
+    AccountingExportSettings, StoreStaff, Game, CatalogProduct, TCGCSVSource,
+    StoreCustomProduct,
 )
 from .report_models import DailyReportFile
 from .email_service import send_report_file
@@ -59,6 +67,14 @@ class GeneralInventoryItemAdmin(admin.ModelAdmin):
     search_fields = ["name", "barcode"]
 
 
+@admin.register(StoreCustomProduct)
+class StoreCustomProductAdmin(admin.ModelAdmin):
+    list_display = ["sku", "name", "store", "product_type", "sub_category", "is_active", "created_date"]
+    list_filter = ["store", "product_type", "is_active"]
+    search_fields = ["sku", "name", "sub_category"]
+    readonly_fields = ["sku"]  # auto-generated in save(), never staff-typed
+
+
 @admin.register(Sale)
 class SaleAdmin(admin.ModelAdmin):
     list_display = ["sale_number", "store", "date", "total", "payment_method", "voided"]
@@ -94,6 +110,51 @@ class AccountingExportSettingsAdmin(admin.ModelAdmin):
 class StoreStaffAdmin(admin.ModelAdmin):
     list_display = ["user", "store", "role"]
     list_filter = ["store", "role"]
+
+
+# -----------------------------------------------------------------------
+# Catalog — Game, CatalogProduct, TCGCSVSource (see models.py module note
+# above CatalogProduct for how these three relate).
+# -----------------------------------------------------------------------
+
+@admin.register(Game)
+class GameAdmin(admin.ModelAdmin):
+    list_display = ["name", "code", "tcgcsv_category_id", "is_active", "sort_order"]
+    list_editable = ["is_active", "sort_order"]  # lets Mike stage/reorder games inline, no per-row edit needed
+    list_filter = ["is_active"]
+    search_fields = ["name", "code"]
+    ordering = ["sort_order", "name"]
+
+
+class TCGCSVSourceInline(admin.StackedInline):
+    """Read-alongside view of the sync linkage on a product's own admin
+    page. extra=0 — this table is populated by sync_tcgcsv, not hand-typed,
+    but left editable in case Mike needs to manually fix a mis-synced row."""
+    model = TCGCSVSource
+    extra = 0
+    can_delete = True
+
+
+@admin.register(CatalogProduct)
+class CatalogProductAdmin(admin.ModelAdmin):
+    list_display = ["sku", "name", "product_type", "game", "set_name", "market_price", "barcode", "thumbnail_url", "is_active", "last_synced"]
+    list_filter = ["product_type", "game", "is_active"]
+    search_fields = ["sku", "name", "set_name", "barcode"]  # barcode-scan lookup for Sealed/Accessories
+    list_select_related = ["game"]  # avoids N+1 on the game column across ~236k rows
+    readonly_fields = ["sku", "last_synced"]  # sku is editable=False on the model; last_synced is sync-only
+    date_hierarchy = "last_synced"
+    list_per_page = 50
+    inlines = [TCGCSVSourceInline]
+
+
+@admin.register(TCGCSVSource)
+class TCGCSVSourceAdmin(admin.ModelAdmin):
+    """Standalone view for debugging syncs directly by TCGCSV ID, separate
+    from browsing via a specific product's inline above."""
+    list_display = ["product", "tcgcsv_product_id", "tcgcsv_subtype_name", "tcgcsv_group_name", "tcgcsv_category_id"]
+    list_filter = ["tcgcsv_subtype_name"]
+    search_fields = ["product__sku", "product__name", "tcgcsv_product_id", "tcgcsv_group_name"]
+    list_select_related = ["product"]
 
 
 @admin.register(DailyReportFile)
