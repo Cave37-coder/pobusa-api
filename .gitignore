@@ -1,13 +1,19 @@
-# pobusa-api .gitignore — v1.1.0
+# pobusa-api .gitignore — v1.2.0
+# v1.2.0: added graphify-out/ (a code-graphing tool's cache, not part of
+# the app -- swept into a commit by accident once, never again) and the
+# db.sqlite3 journal/backup files that pile up locally during migrations.
 # v1.1.0: added set_r2_env.ps1 -- holds real R2 credentials, never commit.
 
 venv/
 __pycache__/
 *.pyc
 db.sqlite3
+db.sqlite3-journal
+db.sqlite3.bak_*
 media/
 .env
 set_r2_env.ps1
 staticfiles/
 *.log
 .DS_Store
+graphify-out/
