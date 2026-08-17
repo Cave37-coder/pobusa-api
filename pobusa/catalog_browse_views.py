@@ -1,4 +1,11 @@
-# PoBuSA catalog_browse_views.py — v1.1.0
+# PoBuSA catalog_browse_views.py — v1.2.0
+# v1.2.0: Pokemon SEALED product now flows through the normal CatalogProduct
+# path (real "pokemon" Game row, synced from TCGCSV via sync_tcgcsv.py's
+# --sealed-only, since pokemart-api itself turned out to have no real sealed
+# Pokemon data -- only digital "Code Card" inserts). Only Singles still use
+# the game=-1 sentinel/pokemart-api proxy below. browse_tree() now excludes
+# the real "pokemon" Game row from the Singles dropdown (avoids listing
+# Pokemon twice) while keeping it in the Sealed dropdown.
 # v1.1.0: Pokemon added to the Singles browse, proxied live from
 # pokemart-api instead of CatalogProduct (Pokemon was always deliberately
 # excluded from sync_tcgcsv/CatalogProduct -- see models.py's module note).
@@ -91,9 +98,17 @@ def browse_tree(request):
         {"id": g.id, "code": g.code, "name": g.name}
         for g in Game.objects.filter(is_active=True).order_by("sort_order", "name")
     ]
-    # Pokemon goes first -- it's the shop's flagship game, and it's the
-    # only one not sourced from PoBuSA's own Game table.
-    singles_games = [{"id": POKEMON_GAME_ID, "code": "pokemon", "name": POKEMON_GAME_NAME}] + games
+    # Pokemon goes first -- it's the shop's flagship game, and for Singles
+    # it's served via the sentinel/pokemart-api proxy, never CatalogProduct.
+    # `games` (above) now also contains a REAL "pokemon" Game DB row
+    # (2026-08-17, seed_games.py) -- but that row exists only for Sealed
+    # product synced from TCGCSV (see sync_tcgcsv.py's --sealed-only note),
+    # so it's excluded here to avoid listing Pokemon twice in the Singles
+    # dropdown. It stays in `games` as-is for the Sealed dropdown below.
+    singles_games = (
+        [{"id": POKEMON_GAME_ID, "code": "pokemon", "name": POKEMON_GAME_NAME}]
+        + [g for g in games if g["code"] != "pokemon"]
+    )
     accessory_types = [
         {"category_id": cat_id, "label": label}
         for cat_id, label in sorted(ACCESSORY_CATEGORY_LABELS.items(), key=lambda kv: kv[1])
@@ -144,7 +159,13 @@ def sets_list(request):
 
     if game_id == str(POKEMON_GAME_ID):
         if product_type != "single":
-            return Response([])  # Pokemon sealed isn't wired up yet -- see module note
+            # Sealed Pokemon never comes through the sentinel/pokemart-api
+            # proxy -- it's synced into CatalogProduct under the real
+            # "pokemon" Game row instead (sync_tcgcsv.py --sealed-only,
+            # 2026-08-17), so the frontend should never actually send
+            # game=-1 with product_type=sealed. Empty result rather than an
+            # error either way.
+            return Response([])
         return _pokemon_sets_list()
 
     rows = (
@@ -194,7 +215,10 @@ def _pokemon_browse(store, product_type, set_name, query, page, page_size):
     search_cards() already established for the buy-in side."""
     empty = {"count": 0, "page": page, "page_size": page_size, "has_more": False, "results": []}
     if product_type != "single":
-        return Response(empty)  # Pokemon sealed isn't wired up yet -- see module note
+        # Sealed Pokemon lives in CatalogProduct under the real "pokemon"
+        # Game row (synced from TCGCSV, --sealed-only) -- not behind this
+        # sentinel/pokemart-api proxy. See sets_list's matching comment.
+        return Response(empty)
 
     params = {"page": page, "page_size": page_size, "ordering": "card_number,variant_sort", "is_active": "true"}
     if query:

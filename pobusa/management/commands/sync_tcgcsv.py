@@ -3,6 +3,19 @@ Syncs CatalogProduct + TCGCSVSource directly from TCGCSV -- no dependency
 on pokemart-api at all, per the requirement to keep PoBuSA fully
 self-contained and never expose PokeBulk's own infrastructure.
 
+v1.3 (2026-08-17): added --sealed-only. Pokemon singles are intentionally
+NOT synced here -- they're served live from pokemart-api's own catalog via
+a proxy in catalog_browse_views.py (game=-1 sentinel), because that's
+where the real, already-ZAR-priced, already-R2-hosted Pokemon single-card
+data actually lives. But pokemart-api has no real sealed Pokemon product
+data (checked: only digital "Code Card" inserts exist there), so Pokemon
+SEALED product (Booster Boxes, ETBs, etc) is synced here from TCGCSV like
+every other game -- except with --sealed-only passed, which makes this
+command skip any row that classifies as 'single' and only write
+'sealed'/'accessory' rows. Used exclusively for the "pokemon" Game row
+(see seed_games.py's docstring) so we never end up with a second,
+unused copy of Pokemon singles sitting in CatalogProduct.
+
 v1.2 (2026-08-10): FIXED A CRITICAL BUG -- every market_price synced before
 this version was TCGCSV's raw marketPrice stored with NO currency
 conversion at all. TCGCSV/TCGPlayer prices are USD; PoBuSA prices need to
@@ -24,6 +37,7 @@ Usage:
     python manage.py sync_tcgcsv                  # sync all active Games + accessories
     python manage.py sync_tcgcsv --game magic      # sync just one game
     python manage.py sync_tcgcsv --accessories-only
+    python manage.py sync_tcgcsv --game pokemon --sealed-only   # Pokemon sealed ONLY -- see v1.3 note above
 
 Run seed_games.py first (once) to create the Game rows this depends on.
 
@@ -143,14 +157,31 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument('--game', type=str, help='Sync only this Game code (e.g. "magic")')
         parser.add_argument('--accessories-only', action='store_true', help='Sync only accessory categories')
+        parser.add_argument(
+            '--sealed-only', action='store_true',
+            help=(
+                "Skip any product that classifies as 'single' -- only 'sealed'/'accessory' "
+                "rows get written. Built for the 'pokemon' Game (see seed_games.py) since "
+                "Pokemon singles are intentionally served live from pokemart-api instead; "
+                "never run a plain (non --sealed-only) sync for that game."
+            ),
+        )
 
     def name_looks_sealed(self, name):
         return any(keyword.lower() in (name or '').lower() for keyword in SEALED_NAME_KEYWORDS)
 
     def handle(self, *args, **options):
+        sealed_only = options.get('sealed_only', False)
+
+        if sealed_only and not options.get('game'):
+            self.stderr.write(self.style.ERROR(
+                "--sealed-only requires --game (it's built for `--game pokemon`, not a full sync)."
+            ))
+            return
+
         if options.get('accessories_only'):
             for cat_id, label in ACCESSORY_CATEGORY_IDS.items():
-                self.sync_category(cat_id, game=None, forced_type='accessory', label=label)
+                self.sync_category(cat_id, game=None, forced_type='accessory', label=label, sealed_only=sealed_only)
             return
 
         games = Game.objects.filter(is_active=True)
@@ -163,19 +194,22 @@ class Command(BaseCommand):
                 return
 
         for game in games:
-            self.sync_category(game.tcgcsv_category_id, game=game, forced_type=None, label=game.name)
+            self.sync_category(
+                game.tcgcsv_category_id, game=game, forced_type=None, label=game.name, sealed_only=sealed_only
+            )
 
         if not options.get('game'):
             self.stdout.write("\nSyncing accessory categories...")
             for cat_id, label in ACCESSORY_CATEGORY_IDS.items():
-                self.sync_category(cat_id, game=None, forced_type='accessory', label=label)
+                self.sync_category(cat_id, game=None, forced_type='accessory', label=label, sealed_only=sealed_only)
 
-    def sync_category(self, category_id, game, forced_type, label):
+    def sync_category(self, category_id, game, forced_type, label, sealed_only=False):
         self.stdout.write(f"Syncing {label} (TCGCSV category {category_id})...")
         groups_resp = get_json_with_retry(f"{TCGCSV_BASE}/{category_id}/groups", command=self)
         groups = groups_resp.get("results", [])
 
         product_count = 0
+        skipped_singles = 0
         for i, group in enumerate(groups, 1):
             price_by_product = self.fetch_prices(category_id, group['groupId'])
 
@@ -192,8 +226,13 @@ class Command(BaseCommand):
                     {"subtype": "Normal", "market_price": None}
                 ]
                 for row in variant_rows:
-                    self.upsert_product_variant(p, game, forced_type, group, row['subtype'], row['market_price'])
-                    product_count += 1
+                    written = self.upsert_product_variant(
+                        p, game, forced_type, group, row['subtype'], row['market_price'], sealed_only=sealed_only
+                    )
+                    if written:
+                        product_count += 1
+                    else:
+                        skipped_singles += 1
             time.sleep(0.1)  # be a good neighbor, per TCGCSV's docs
 
             # Progress marker per set, not just per game -- a long game
@@ -202,7 +241,10 @@ class Command(BaseCommand):
             # line and the final summary.
             self.stdout.write(f"    [{i}/{len(groups)}] {group['name']} ({product_count} products so far)")
 
-        self.stdout.write(self.style.SUCCESS(f"  {label}: {len(groups)} groups, {product_count} products synced\n"))
+        summary = f"  {label}: {len(groups)} groups, {product_count} products synced"
+        if sealed_only:
+            summary += f" ({skipped_singles} single-classified rows skipped, --sealed-only)"
+        self.stdout.write(self.style.SUCCESS(summary + "\n"))
 
     def fetch_prices(self, category_id, group_id):
         """Returns {productId: [{"subtype": name, "market_price": price}, ...]}
@@ -222,7 +264,10 @@ class Command(BaseCommand):
             })
         return by_product
 
-    def upsert_product_variant(self, p, game, forced_type, group, subtype, market_price):
+    def upsert_product_variant(self, p, game, forced_type, group, subtype, market_price, sealed_only=False):
+        """Returns True if a row was written, False if skipped (only
+        possible when sealed_only=True and this product classified as
+        'single' -- see --sealed-only's help text)."""
         extended = {e['name']: e['value'] for e in p.get('extendedData', [])}
         card_number = extended.get('Number', '') or extended.get('CardNumber', '')
 
@@ -239,6 +284,13 @@ class Command(BaseCommand):
             inferred_type = 'sealed'
         else:
             inferred_type = 'single' if ('Number' in extended or 'Rarity' in extended) else 'sealed'
+
+        if sealed_only and inferred_type == 'single':
+            # Bail out before any TCGCSVSource/CatalogProduct lookup or
+            # write -- this row (e.g. an individual Pokemon card) is
+            # deliberately left alone, since Pokemon singles are served
+            # live from pokemart-api instead. See module docstring (v1.3).
+            return False
 
         try:
             source = TCGCSVSource.objects.select_related('product').get(
@@ -299,3 +351,5 @@ class Command(BaseCommand):
         source.tcgcsv_group_id = p['groupId']
         source.tcgcsv_group_name = group['name']
         source.save()
+
+        return True

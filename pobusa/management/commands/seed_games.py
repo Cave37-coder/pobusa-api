@@ -6,12 +6,20 @@ Usage: python manage.py seed_games
 
 Category IDs confirmed live from https://tcgcsv.com/tcgplayer/categories
 as of July 2026.
+
+2026-08-17: added "pokemon" (category 3). IMPORTANT -- this Game row is
+ONLY ever used for Pokemon SEALED product (sync_tcgcsv --game pokemon
+--sealed-only). Pokemon SINGLES stay on the live pokemart-api proxy in
+catalog_browse_views.py, exactly as before -- never run a normal
+(non---sealed-only) sync for this game, it would create duplicate/unused
+single rows and defeat the whole point of the pokemart-api proxy.
 """
 from django.core.management.base import BaseCommand
 from pobusa.models import Game
 
 GAMES = [
     # (code, name, tcgcsv_category_id, sort_order)
+    ("pokemon", "Pokémon", 3, 5),  # SEALED ONLY -- see module docstring
     ("magic", "Magic: The Gathering", 1, 10),
     ("yugioh", "Yu-Gi-Oh!", 2, 20),
     ("one-piece", "One Piece Card Game", 68, 30),
