@@ -3,6 +3,17 @@ Syncs CatalogProduct + TCGCSVSource directly from TCGCSV -- no dependency
 on pokemart-api at all, per the requirement to keep PoBuSA fully
 self-contained and never expose PokeBulk's own infrastructure.
 
+v1.2 (2026-08-10): FIXED A CRITICAL BUG -- every market_price synced before
+this version was TCGCSV's raw marketPrice stored with NO currency
+conversion at all. TCGCSV/TCGPlayer prices are USD; PoBuSA prices need to
+be ZAR. Confirmed by checking a live example against TCGCSV directly: a
+stored market_price of 13000.00 matched TCGCSV's live marketPrice of
+13000.0 exactly for the same product -- i.e. every single one of the
+299,728 rows synced so far is a raw dollar figure sitting in a rand field.
+Now multiplies by USD_TO_ZAR_RATE below on every save. Existing rows need
+backfill_currency_conversion run once (see that command's docstring for
+why it doesn't just re-run this whole sync).
+
 v1.1 (PoBuSA Checklist Phase 1, item 2): now also populates
 CatalogProduct.release_date from TCGCSV's group.publishedOn on every
 upsert. Existing rows synced before this change stay null until either a
@@ -22,12 +33,23 @@ requests) -- see https://tcgcsv.com/docs
 import re
 import time
 from datetime import datetime
+from decimal import Decimal
 
 import requests
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from pobusa.models import Game, CatalogProduct, TCGCSVSource
+
+# TCGCSV/TCGPlayer prices are always USD. PoBuSA sells in ZAR. This is a
+# plain constant (not live-looked-up) on purpose -- a shop doesn't want its
+# shelf prices twitching every time the rand moves intraday. Checked
+# 2026-08-10 against xe.com/investing.com, live mid-market rate was
+# ~R16.14-16.22/USD; update this by hand periodically (e.g. monthly) rather
+# than wiring in a live forex API. Whenever you change it, existing rows
+# need backfill_currency_conversion run again with the OLD rate passed in
+# (see that command), not another full sync.
+USD_TO_ZAR_RATE = Decimal("16.20")
 
 
 def parse_release_date(published_on):
@@ -239,7 +261,14 @@ class Command(BaseCommand):
         product.set_name = group['name'][:255]
         product.card_number = card_number[:20]
         product.variant = subtype[:100]
-        product.market_price = market_price
+        # TCGCSV's marketPrice is USD -- convert to ZAR here, once, at the
+        # only place a price is ever written onto CatalogProduct. See
+        # USD_TO_ZAR_RATE's module-level comment.
+        product.market_price = (
+            (Decimal(str(market_price)) * USD_TO_ZAR_RATE).quantize(Decimal("0.01"))
+            if market_price is not None
+            else None
+        )
         product.image_url = p.get('imageUrl', '')
         product.release_date = parse_release_date(group.get('publishedOn'))
         product.is_active = True
