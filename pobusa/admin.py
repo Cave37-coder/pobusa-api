@@ -1,4 +1,7 @@
-# PoBuSA admin.py — v1.4.0
+# PoBuSA admin.py — v1.5.0
+# v1.5.0: removed the deprecated CatalogProduct.stock_quantity from
+# CatalogProductAdmin (Checklist Phase 4, item 13) -- superseded by
+# ClientCatalogStock's own admin entry (v1.4.0 below).
 # v1.4.0: registered ClientCatalogStock (PoBuSA Checklist Phase 4, item
 # 10) -- purely additive, nothing reads from it yet, see the model's own
 # docstring for why it's SKU-string-keyed rather than a real FK.
@@ -153,13 +156,11 @@ class TCGCSVSourceInline(admin.StackedInline):
 
 @admin.register(CatalogProduct)
 class CatalogProductAdmin(admin.ModelAdmin):
-    # stock_quantity is list_editable -- manual bridge until the real
-    # buy-in flow (Checklist Phase 3, item 12) exists for every synced
-    # game; see the field's own docstring in models.py. Lets Mike set
-    # counts inline, no per-row edit page needed for the common case.
-    list_display = ["sku", "name", "product_type", "game", "set_name", "stock_quantity", "market_price", "barcode", "thumbnail_url", "is_active", "last_synced"]
+    # stock_quantity removed from here (Checklist Phase 4, item 13,
+    # 2026-08-19) -- deprecated, superseded by ClientCatalogStock's own
+    # admin entry. See the field's own docstring in models.py.
+    list_display = ["sku", "name", "product_type", "game", "set_name", "market_price", "barcode", "thumbnail_url", "is_active", "last_synced"]
     list_filter = ["product_type", "game", "is_active"]
-    list_editable = ["stock_quantity"]
     search_fields = ["sku", "name", "set_name", "barcode"]  # barcode-scan lookup for Sealed/Accessories
     list_select_related = ["game"]  # avoids N+1 on the game column across ~236k rows
     readonly_fields = ["sku", "last_synced"]  # sku is editable=False on the model; last_synced is sync-only
