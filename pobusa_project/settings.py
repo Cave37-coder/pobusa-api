@@ -1,4 +1,7 @@
-# pobusa_project/settings.py — v1.1.0
+# pobusa_project/settings.py — v1.2.0
+# v1.2.0: added CATALOG_SERVICE_BASE (PoBuSA Checklist Phase 4, item 14) --
+# see its own section below. Unset by default, so this change is a no-op
+# for every deployment until items 15-16 actually build the proxy path.
 # v1.1.0: switched from EMAIL_USE_TLS to EMAIL_USE_SSL — port 465 (cPanel's
 # recommended SMTP port) is SSL, not TLS. Using the wrong one causes the
 # connection to silently misbehave rather than give a clear error.
@@ -79,6 +82,22 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+# --- MULTI-TENANT CATALOG (PoBuSA Checklist Phase 4, item 14) ---
+# Unset (the default) means "this deployment IS the catalog authority" --
+# behaves exactly as every deployment has so far: Game/CatalogProduct/
+# TCGCSVSource live in THIS database, synced here via sync_tcgcsv, and
+# catalog_browse_views.py answers browse/sets requests straight from the
+# local DB. Once a per-Client deployment exists (items 15-16 build the
+# actual proxy path), setting this to another PoBuSA deployment's own
+# base URL (e.g. "https://pobusa-catalog-production.up.railway.app/api/pobusa")
+# switches THAT deployment's catalog endpoints to proxy out to the real
+# catalog authority instead of querying its own (deliberately empty)
+# local CatalogProduct table. Trailing slash doesn't matter -- stripped
+# here so callers never have to think about it. Mirrors the exact
+# "read-only reference data over HTTP, never a live table dependency"
+# pattern CLAUDE.md's pokemart-api hard rule already established.
+CATALOG_SERVICE_BASE = os.environ.get("CATALOG_SERVICE_BASE", "").rstrip("/") or None
 
 # --- PASSWORD VALIDATION ---
 AUTH_PASSWORD_VALIDATORS = [
