@@ -1,4 +1,14 @@
-# PoBuSA catalog_browse_views.py — v1.2.0
+# PoBuSA catalog_browse_views.py — v1.3.0
+# v1.3.0: browse_products now accepts ?in_stock_only=true. Business rule
+# per Michael 2026-08-19: Buy-in and Inventory (admin) must always show
+# every product; only the Sell screen restricts to what's actually in
+# stock. Backed by CatalogProduct.stock_quantity (a new manual-for-now
+# field, see its docstring in models.py) for the TCGCSV catalog. Pokemon
+# singles are filtered against PoBuSA's OWN CardStockLine ledger, NEVER
+# pokemart-api's stock/in_stock fields -- see the new project-level
+# CLAUDE.md hard rule (2026-08-19): pokemart-api is read-only card info
+# only, PoBuSA holds all of its own stock, including Pokemon's, in its own
+# database. Results now carry stock_quantity so the frontend can show it.
 # v1.2.0: Pokemon SEALED product now flows through the normal CatalogProduct
 # path (real "pokemon" Game row, synced from TCGCSV via sync_tcgcsv.py's
 # --sealed-only, since pokemart-api itself turned out to have no real sealed
@@ -46,9 +56,9 @@ import requests
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from django.db.models import Max
+from django.db.models import Max, Sum
 
-from .models import Game, CatalogProduct, Store
+from .models import Game, CatalogProduct, Store, CardStockLine
 
 # Mirrors sync_tcgcsv.py's ACCESSORY_CATEGORY_IDS -- kept as its own copy
 # here rather than importing a management command module into request-path
@@ -207,7 +217,7 @@ def _estimate_from_market_ref(market_ref, sell_percent):
     return round(market_ref * sell_percent / 100, 2)
 
 
-def _pokemon_browse(store, product_type, set_name, query, page, page_size):
+def _pokemon_browse(store, product_type, set_name, query, page, page_size, in_stock_only=False):
     """Proxies pokemart-api's /api/products/ into the same browse-result
     shape CatalogProduct rows return, so the frontend's ProductGrid/
     VariantPanel never need to know or care which source answered --
@@ -252,7 +262,39 @@ def _pokemon_browse(store, product_type, set_name, query, page, page_size):
             "image_url": p.get("image_url") or None,
             "market_price": p.get("price"),
             "estimated_sell_price": _estimate_from_market_ref(p.get("price"), sell_percent),
+            # Deliberately NOT p.get("stock")/p.get("in_stock") -- see
+            # CLAUDE.md hard rule (2026-08-19): pokemart-api is read-only
+            # card info only, never a source of truth for a PoBuSA store's
+            # own stock. Filled in below from PoBuSA's own CardStockLine
+            # ledger instead.
+            "stock_quantity": 0,
         })
+
+    # PoBuSA's own stock, never pokemart-api's. CardStockLine.card_id
+    # already matches this SKU scheme -- the existing Buy-in flow writes
+    # rows here via pokemart-api's card_lookup/search (info only), so this
+    # just reads the ledger that's always been this store's real Pokemon
+    # stock. See CLAUDE.md hard rule (2026-08-19).
+    skus = [r["sku"] for r in results if r["sku"]]
+    stock_by_sku = dict(
+        CardStockLine.objects
+        .filter(invoice__store=store, status="in_stock", card_id__in=skus)
+        .values("card_id")
+        .annotate(total=Sum("quantity"))
+        .values_list("card_id", "total")
+    )
+    for r in results:
+        r["stock_quantity"] = stock_by_sku.get(r["sku"], 0)
+
+    if in_stock_only:
+        # Filtered AFTER pokemart's own pagination, since pokemart has no
+        # concept of PoBuSA's stock to filter on server-side -- so a page
+        # can come back with fewer than page_size items, and count/has_more
+        # below still reflect pokemart's unfiltered totals, not the
+        # in-stock subset. Acceptable for now (manual-bridge era, same
+        # caveat as CatalogProduct.stock_quantity); revisit once the real
+        # buy-in flow (Checklist Phase 3, item 12) exists.
+        results = [r for r in results if r["stock_quantity"] > 0]
 
     return Response({
         "count": data.get("count", len(results)),
@@ -292,15 +334,26 @@ def browse_products(request, store_id):
     except ValueError:
         page_size = DEFAULT_PAGE_SIZE
 
+    # Business rule, per Michael 2026-08-19: Buy-in and Inventory (admin)
+    # always show every product; only the Sell screen restricts to what's
+    # actually in stock. Left opt-in (default False) rather than baked
+    # into this endpoint's default behaviour, since Buy-in's own browse UI
+    # (Checklist Phase 3, item 12, not built yet) will very likely reuse
+    # this same endpoint and must keep seeing everything.
+    in_stock_only = request.query_params.get("in_stock_only") == "true"
+
     if request.query_params.get("game") == str(POKEMON_GAME_ID):
         return _pokemon_browse(
             store, product_type,
             request.query_params.get("set"),
             request.query_params.get("q", "").strip(),
             page, page_size,
+            in_stock_only=in_stock_only,
         )
 
     qs = CatalogProduct.objects.filter(product_type=product_type, is_active=True)
+    if in_stock_only:
+        qs = qs.filter(stock_quantity__gt=0)
 
     if product_type in ("single", "sealed"):
         game_id = request.query_params.get("game")
@@ -338,6 +391,7 @@ def browse_products(request, store_id):
             "image_url": p.image_url or None,
             "market_price": p.market_price,
             "estimated_sell_price": _estimate_from_market_ref(p.market_price, sell_percent),
+            "stock_quantity": p.stock_quantity,
         }
         for p in page_rows
     ]

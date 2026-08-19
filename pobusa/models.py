@@ -506,6 +506,19 @@ class CatalogProduct(models.Model):
     is_active = models.BooleanField(default=True)  # soft-hide if TCGCSV drops something, never hard-delete
     last_synced = models.DateTimeField(null=True, blank=True)
 
+    # 2026-08-19: manual bridge until the real buy-in flow (PoBuSA
+    # Checklist Phase 3, item 12) exists for every synced game. There's no
+    # ledger yet that can derive "how many of this do we actually have" for
+    # Magic/Yu-Gi-Oh/etc (Pokemon singles use pokemart-api's own real
+    # stock/in_stock fields instead, never this). Staff edit this by hand
+    # in Django admin (list_editable) for now. Business rule, per Michael
+    # 2026-08-19: Buy-in and Inventory (admin) always show every product
+    # regardless of this value; only the Sell screen's browse filters on
+    # it (?in_stock_only=true — see catalog_browse_views.py). Once item 12
+    # ships, its stock decrement/increment logic should write to this same
+    # field rather than introducing a second source of truth.
+    stock_quantity = models.PositiveIntegerField(default=0)
+
     class Meta:
         indexes = [
             models.Index(fields=["product_type", "game"]),

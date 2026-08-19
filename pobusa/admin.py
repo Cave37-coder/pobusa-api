@@ -137,8 +137,13 @@ class TCGCSVSourceInline(admin.StackedInline):
 
 @admin.register(CatalogProduct)
 class CatalogProductAdmin(admin.ModelAdmin):
-    list_display = ["sku", "name", "product_type", "game", "set_name", "market_price", "barcode", "thumbnail_url", "is_active", "last_synced"]
+    # stock_quantity is list_editable -- manual bridge until the real
+    # buy-in flow (Checklist Phase 3, item 12) exists for every synced
+    # game; see the field's own docstring in models.py. Lets Mike set
+    # counts inline, no per-row edit page needed for the common case.
+    list_display = ["sku", "name", "product_type", "game", "set_name", "stock_quantity", "market_price", "barcode", "thumbnail_url", "is_active", "last_synced"]
     list_filter = ["product_type", "game", "is_active"]
+    list_editable = ["stock_quantity"]
     search_fields = ["sku", "name", "set_name", "barcode"]  # barcode-scan lookup for Sealed/Accessories
     list_select_related = ["game"]  # avoids N+1 on the game column across ~236k rows
     readonly_fields = ["sku", "last_synced"]  # sku is editable=False on the model; last_synced is sync-only
