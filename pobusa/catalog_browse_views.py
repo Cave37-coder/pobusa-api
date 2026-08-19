@@ -1,4 +1,9 @@
-# PoBuSA catalog_browse_views.py — v1.5.0
+# PoBuSA catalog_browse_views.py — v1.6.0
+# v1.6.0 (Checklist Phase 4, item 16): sets_list/browse_products now call
+# the item 15 proxy helpers when settings.CATALOG_SERVICE_BASE is set.
+# Unset (the default) falls straight through to the exact same local-DB
+# path every deployment has used since v1.0 -- zero behavior change for
+# the live deployment, which doesn't set this env var.
 # v1.5.0 (Checklist Phase 4, item 15): added _remote_catalog_sets_list and
 # _remote_catalog_browse -- generic proxy helpers for calling another
 # PoBuSA deployment's own catalog endpoints (settings.CATALOG_SERVICE_BASE),
@@ -198,6 +203,13 @@ def sets_list(request):
             # error either way.
             return Response([])
         return _pokemon_sets_list()
+
+    if settings.CATALOG_SERVICE_BASE:
+        # Checklist Phase 4, item 16 -- this deployment doesn't hold the
+        # catalog itself, proxy out to the one that does. Unset (the
+        # default) falls straight through to the local query below,
+        # unchanged from every deployment's behavior before this item.
+        return _remote_catalog_sets_list(product_type, game_id)
 
     rows = (
         CatalogProduct.objects
@@ -478,6 +490,23 @@ def browse_products(request, store_id):
         return _pokemon_browse(
             store, product_type,
             request.query_params.get("set"),
+            request.query_params.get("q", "").strip(),
+            page, page_size,
+            in_stock_only=in_stock_only,
+        )
+
+    if settings.CATALOG_SERVICE_BASE:
+        # Checklist Phase 4, item 16 -- this deployment doesn't hold the
+        # catalog itself, proxy out to the one that does instead of
+        # querying our own (deliberately empty) local CatalogProduct
+        # table. Unset (the default) falls straight through to the local
+        # path below, unchanged from every deployment's behavior before
+        # this item.
+        return _remote_catalog_browse(
+            store, product_type,
+            request.query_params.get("game"),
+            request.query_params.get("set"),
+            request.query_params.get("accessory_type"),
             request.query_params.get("q", "").strip(),
             page, page_size,
             in_stock_only=in_stock_only,
