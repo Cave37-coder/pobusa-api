@@ -1,4 +1,9 @@
-# PoBuSA catalog_browse_views.py — v1.4.0
+# PoBuSA catalog_browse_views.py — v1.4.1
+# v1.4.1: fixed a bug caught from a live screenshot -- Pokemon's
+# in_stock_only path was reporting pokemart's raw unfiltered count/
+# has_more even after filtering results down to real PoBuSA stock,
+# showing e.g. "36,799 results" over an empty grid. Now derived from the
+# actually-filtered results instead. See _pokemon_browse's own comment.
 # v1.4.0 (Checklist Phase 4, item 12): the TCGCSV-catalog side of
 # ?in_stock_only=true now filters/reports stock via ClientCatalogStock
 # (Phase 4, item 10) instead of CatalogProduct.stock_quantity, which is on
@@ -293,18 +298,28 @@ def _pokemon_browse(store, product_type, set_name, query, page, page_size, in_st
     if in_stock_only:
         # Filtered AFTER pokemart's own pagination, since pokemart has no
         # concept of PoBuSA's stock to filter on server-side -- so a page
-        # can come back with fewer than page_size items, and count/has_more
-        # below still reflect pokemart's unfiltered totals, not the
-        # in-stock subset. Acceptable for now (manual-bridge era, same
-        # caveat as CatalogProduct.stock_quantity); revisit once the real
-        # buy-in flow (Checklist Phase 3, item 12) exists.
+        # can come back with fewer than page_size items. Report count/
+        # has_more off the FILTERED results, not pokemart's raw totals --
+        # caught 2026-08-19 from a live screenshot showing "36,799 results"
+        # over an empty "no products match" grid with a "Load more" that
+        # would only ever load more empty pages. has_more is conservatively
+        # False here (there could technically be in-stock items further
+        # into pokemart's unfiltered pages, but we'd have to walk them to
+        # know) -- acceptable for now since CardStockLine has near-zero
+        # real Pokemon stock in it yet anyway; revisit once the real buy-in
+        # flow (Checklist Phase 5, item 23) has actually populated it.
         results = [r for r in results if r["stock_quantity"] > 0]
+        count = len(results)
+        has_more = False
+    else:
+        count = data.get("count", len(results))
+        has_more = data.get("next") is not None
 
     return Response({
-        "count": data.get("count", len(results)),
+        "count": count,
         "page": page,
         "page_size": page_size,
-        "has_more": data.get("next") is not None,
+        "has_more": has_more,
         "results": results,
     })
 
