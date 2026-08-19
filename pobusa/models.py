@@ -173,6 +173,44 @@ class SealedStockItem(models.Model):
         return self.product_name
 
 
+class ClientCatalogStock(models.Model):
+    """PoBuSA Checklist Phase 4, item 10 -- the real, per-Client home for
+    what CatalogProduct.stock_quantity (Phase 3, item 9) is standing in
+    for today. Deliberately references the catalog by `sku` as a plain
+    string, exactly the same pattern CardStockLine.card_id already uses
+    for Pokemon -- NOT a ForeignKey to CatalogProduct. Two reasons:
+
+    1. Once the catalog moves to its own centrally-shared deployment
+       (Phase 4, items 14-16 -- CATALOG_SERVICE_BASE), CatalogProduct
+       will live in a different physical database for every Client
+       deployment except the one acting as catalog authority. A real FK
+       across separate database connections isn't possible in Django (or
+       meaningful at all), so a plain SKU reference is the only choice
+       that survives that split without a rewrite.
+    2. It's consistent with the project's now-codified stance (see
+       CLAUDE.md) that stock and catalog/reference data are always two
+       separate concerns, joined only by an identifier string, never a
+       live dependency.
+
+    Purely additive for now (Phase 4, item 10) -- nothing reads from this
+    table yet. Item 11 backfills any existing CatalogProduct.stock_quantity
+    values into it; item 12 repoints the Sell screen's in-stock filter at
+    it instead."""
+    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name="catalog_stock")
+    sku = models.CharField(max_length=60)  # matches CatalogProduct.sku's own max_length
+    quantity = models.PositiveIntegerField(default=0)
+    last_updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["store", "sku"]
+        indexes = [
+            models.Index(fields=["store", "sku"]),
+        ]
+
+    def __str__(self):
+        return f"{self.store} · {self.sku} ({self.quantity})"
+
+
 class GeneralInventoryItem(models.Model):
     """Anything non-card: cooldrinks, accessories, etc. Same category tab
     interface as cards/sealed on the front end."""

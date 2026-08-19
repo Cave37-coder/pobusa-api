@@ -1,4 +1,7 @@
-# PoBuSA admin.py — v1.3.0
+# PoBuSA admin.py — v1.4.0
+# v1.4.0: registered ClientCatalogStock (PoBuSA Checklist Phase 4, item
+# 10) -- purely additive, nothing reads from it yet, see the model's own
+# docstring for why it's SKU-string-keyed rather than a real FK.
 # v1.3.0: registered StoreCustomProduct (PoBuSA Checklist Phase 1, item 4).
 # sku is readonly same as CatalogProduct's -- it's auto-generated in
 # save(), never staff-typed.
@@ -16,7 +19,7 @@ from .models import (
     Store, BuyPercentTier, Invoice, CardStockLine, SealedStockItem,
     GeneralInventoryItem, Sale, SaleItem, CreditNote, DailySalesSummary,
     AccountingExportSettings, StoreStaff, Game, CatalogProduct, TCGCSVSource,
-    StoreCustomProduct,
+    StoreCustomProduct, ClientCatalogStock,
 )
 from .report_models import DailyReportFile
 from .email_service import send_report_file
@@ -65,6 +68,19 @@ class GeneralInventoryItemAdmin(admin.ModelAdmin):
     list_display = ["name", "store", "category", "cost_price", "sell_price", "quantity"]
     list_filter = ["store", "category"]
     search_fields = ["name", "barcode"]
+
+
+@admin.register(ClientCatalogStock)
+class ClientCatalogStockAdmin(admin.ModelAdmin):
+    # PoBuSA Checklist Phase 4, item 10 -- purely additive for now, nothing
+    # reads from this table yet (see model docstring). Registered here so
+    # Mike can eyeball/hand-set entries once item 12 wires the Sell screen
+    # up to it. quantity is list_editable for the same quick-bulk-edit
+    # reason CatalogProduct.stock_quantity's admin entry has it.
+    list_display = ["store", "sku", "quantity", "last_updated"]
+    list_filter = ["store"]
+    list_editable = ["quantity"]
+    search_fields = ["sku"]
 
 
 @admin.register(StoreCustomProduct)
