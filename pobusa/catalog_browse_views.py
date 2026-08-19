@@ -1,4 +1,8 @@
-# PoBuSA catalog_browse_views.py — v1.3.0
+# PoBuSA catalog_browse_views.py — v1.4.0
+# v1.4.0 (Checklist Phase 4, item 12): the TCGCSV-catalog side of
+# ?in_stock_only=true now filters/reports stock via ClientCatalogStock
+# (Phase 4, item 10) instead of CatalogProduct.stock_quantity, which is on
+# its way out (item 13). Pokemon's CardStockLine path is unchanged.
 # v1.3.0: browse_products now accepts ?in_stock_only=true. Business rule
 # per Michael 2026-08-19: Buy-in and Inventory (admin) must always show
 # every product; only the Sell screen restricts to what's actually in
@@ -58,7 +62,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.db.models import Max, Sum
 
-from .models import Game, CatalogProduct, Store, CardStockLine
+from .models import Game, CatalogProduct, Store, CardStockLine, ClientCatalogStock
 
 # Mirrors sync_tcgcsv.py's ACCESSORY_CATEGORY_IDS -- kept as its own copy
 # here rather than importing a management command module into request-path
@@ -338,7 +342,7 @@ def browse_products(request, store_id):
     # always show every product; only the Sell screen restricts to what's
     # actually in stock. Left opt-in (default False) rather than baked
     # into this endpoint's default behaviour, since Buy-in's own browse UI
-    # (Checklist Phase 3, item 12, not built yet) will very likely reuse
+    # (Checklist Phase 5, item 23, not built yet) will very likely reuse
     # this same endpoint and must keep seeing everything.
     in_stock_only = request.query_params.get("in_stock_only") == "true"
 
@@ -353,7 +357,15 @@ def browse_products(request, store_id):
 
     qs = CatalogProduct.objects.filter(product_type=product_type, is_active=True)
     if in_stock_only:
-        qs = qs.filter(stock_quantity__gt=0)
+        # Checklist Phase 4, item 12: filters against the real per-Client
+        # ClientCatalogStock table now, not the deprecated
+        # CatalogProduct.stock_quantity bridge (Phase 3 item 9 / Phase 4
+        # item 13). Subquery, not a Python-side set -- stays a single SQL
+        # query no matter how big the catalog or the stock table gets. See
+        # ClientCatalogStock's own docstring for why this is a sku-string
+        # join rather than a real FK (survives the catalog split too).
+        in_stock_skus = ClientCatalogStock.objects.filter(store=store, quantity__gt=0).values("sku")
+        qs = qs.filter(sku__in=in_stock_skus)
 
     if product_type in ("single", "sealed"):
         game_id = request.query_params.get("game")
@@ -378,6 +390,15 @@ def browse_products(request, store_id):
 
     sell_percent = store.sell_percent_default
 
+    # Real per-Client stock for just this page's rows, from
+    # ClientCatalogStock (Checklist Phase 4, item 12) -- not
+    # CatalogProduct.stock_quantity, which is on its way out (item 13).
+    stock_by_sku = dict(
+        ClientCatalogStock.objects
+        .filter(store=store, sku__in=[p.sku for p in page_rows])
+        .values_list("sku", "quantity")
+    )
+
     results = [
         {
             "id": p.id,
@@ -391,7 +412,7 @@ def browse_products(request, store_id):
             "image_url": p.image_url or None,
             "market_price": p.market_price,
             "estimated_sell_price": _estimate_from_market_ref(p.market_price, sell_percent),
-            "stock_quantity": p.stock_quantity,
+            "stock_quantity": stock_by_sku.get(p.sku, 0),
         }
         for p in page_rows
     ]
