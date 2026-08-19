@@ -1,4 +1,10 @@
-# PoBuSA catalog_browse_views.py — v1.6.0
+# PoBuSA catalog_browse_views.py — v1.6.1
+# v1.6.1: browse_tree() now also proxies (via _remote_catalog_browse_tree)
+# when CATALOG_SERVICE_BASE is set -- found missing during item 17's real
+# two-server verification. Without it, a fresh Client's empty local Game
+# table left the Sealed dropdown empty and Singles showing only Pokemon,
+# even though sets_list/browse_products underneath were already proxying
+# correctly. See that function's own docstring for the full story.
 # v1.6.0 (Checklist Phase 4, item 16): sets_list/browse_products now call
 # the item 15 proxy helpers when settings.CATALOG_SERVICE_BASE is set.
 # Unset (the default) falls straight through to the exact same local-DB
@@ -122,6 +128,28 @@ POKEMART_TIMEOUT = 8
 CATALOG_SERVICE_TIMEOUT = 8
 
 
+def _remote_catalog_browse_tree():
+    """Proxies another PoBuSA deployment's own /catalog/browse-tree/
+    endpoint verbatim -- found necessary during item 17's real two-server
+    verification (2026-08-19): a fresh Client deployment's own local Game
+    table is empty by design (it never runs seed_games/sync_tcgcsv -- that
+    data belongs to the catalog authority), so without this, sets_list and
+    browse_products would proxy correctly but the Sealed dropdown would
+    render completely empty and Singles would show only the Pokemon
+    sentinel entry -- everything downstream working, but unreachable from
+    the UI. No translation needed: it's the exact same response shape,
+    already correctly excludes/includes Pokemon per game/product_type on
+    the authority's side. Checklist Phase 4, item 16 addendum."""
+    try:
+        resp = requests.get(
+            f"{settings.CATALOG_SERVICE_BASE}/catalog/browse-tree/", timeout=CATALOG_SERVICE_TIMEOUT
+        )
+        resp.raise_for_status()
+        return Response(resp.json())
+    except requests.RequestException:
+        return Response({"error": "Catalog service unreachable"}, status=status.HTTP_502_BAD_GATEWAY)
+
+
 @api_view(["GET"])
 def browse_tree(request):
     """GET /api/pobusa/catalog/browse-tree/
@@ -130,6 +158,12 @@ def browse_tree(request):
     accessory). The third level (Set) is fetched separately via sets_list
     once a specific game/accessory type is picked -- Set lists can be long,
     no reason to ship all of them up front."""
+    if settings.CATALOG_SERVICE_BASE:
+        # Checklist Phase 4, item 16 addendum -- see _remote_catalog_browse_tree's
+        # own docstring for why this exists. Unset (the default) falls
+        # straight through to the local query below, unchanged.
+        return _remote_catalog_browse_tree()
+
     games = [
         {"id": g.id, "code": g.code, "name": g.name}
         for g in Game.objects.filter(is_active=True).order_by("sort_order", "name")
