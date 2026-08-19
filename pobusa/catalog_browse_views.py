@@ -1,4 +1,11 @@
-# PoBuSA catalog_browse_views.py — v1.4.1
+# PoBuSA catalog_browse_views.py — v1.5.0
+# v1.5.0 (Checklist Phase 4, item 15): added _remote_catalog_sets_list and
+# _remote_catalog_browse -- generic proxy helpers for calling another
+# PoBuSA deployment's own catalog endpoints (settings.CATALOG_SERVICE_BASE),
+# mirroring _pokemon_browse's "raw reference data in, store-specific
+# numbers computed locally" split. Also factored the stock lookup shared
+# by browse_products and the new proxy into _client_stock_map. NOT wired
+# into sets_list/browse_products yet -- that's item 16, still pending.
 # v1.4.1: fixed a bug caught from a live screenshot -- Pokemon's
 # in_stock_only path was reporting pokemart's raw unfiltered count/
 # has_more even after filtering results down to real PoBuSA stock,
@@ -65,6 +72,7 @@ import requests
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from django.conf import settings
 from django.db.models import Max, Sum
 
 from .models import Game, CatalogProduct, Store, CardStockLine, ClientCatalogStock
@@ -103,6 +111,10 @@ POKEMON_GAME_ID = -1
 POKEMON_GAME_NAME = "Pokémon"
 POKEMART_API_BASE = "https://api.pokebulk.co.za"
 POKEMART_TIMEOUT = 8
+
+# Checklist Phase 4, item 15 -- timeout for calls to another PoBuSA
+# deployment's own catalog endpoints (settings.CATALOG_SERVICE_BASE).
+CATALOG_SERVICE_TIMEOUT = 8
 
 
 @api_view(["GET"])
@@ -324,6 +336,107 @@ def _pokemon_browse(store, product_type, set_name, query, page, page_size, in_st
     })
 
 
+def _client_stock_map(store, skus):
+    """Batched ClientCatalogStock lookup for a list of skus -- PoBuSA's own
+    real per-Client stock, never a remote source's. Shared by browse_products
+    (local catalog) and _remote_catalog_browse (Checklist Phase 4, item 15)
+    so both compute stock the exact same way."""
+    if not skus:
+        return {}
+    return dict(
+        ClientCatalogStock.objects.filter(store=store, sku__in=skus).values_list("sku", "quantity")
+    )
+
+
+def _remote_catalog_sets_list(product_type, game_id):
+    """Proxies another PoBuSA deployment's own /catalog/sets/ endpoint.
+    That endpoint is already store-agnostic reference data (see sets_list's
+    own docstring/SECURITY NOTE above), so the response is used exactly
+    as-is -- no translation needed, unlike the Pokemon/pokemart-api case.
+    Checklist Phase 4, item 15. Not wired into sets_list yet -- that's
+    item 16."""
+    try:
+        resp = requests.get(
+            f"{settings.CATALOG_SERVICE_BASE}/catalog/sets/",
+            params={"product_type": product_type, "game": game_id},
+            timeout=CATALOG_SERVICE_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return Response(resp.json())
+    except requests.RequestException:
+        return Response({"error": "Catalog service unreachable"}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+def _remote_catalog_browse(store, product_type, game_id, set_name, accessory_type, query, page, page_size, in_stock_only=False):
+    """Proxies another PoBuSA deployment's own /stores/<id>/catalog/browse/
+    endpoint to fetch the shared reference catalog (name, set, image,
+    market_price) -- then discards THAT deployment's own store-specific
+    estimated_sell_price/stock_quantity entirely and recomputes both using
+    THIS (calling) store's own sell_percent_default and ClientCatalogStock.
+    Exactly the same "raw reference data in, store-specific numbers
+    computed locally" split _pokemon_browse already uses for pokemart-api.
+    settings.CATALOG_SERVICE_STORE_ID is only ever used to satisfy that
+    remote endpoint's URL shape -- see its own docstring in settings.py for
+    why the specific value doesn't matter. Checklist Phase 4, item 15. Not
+    wired into browse_products yet -- that's item 16."""
+    empty = {"count": 0, "page": page, "page_size": page_size, "has_more": False, "results": []}
+
+    params = {"product_type": product_type, "page": page, "page_size": page_size}
+    if game_id:
+        params["game"] = game_id
+    if set_name:
+        params["set"] = set_name
+    if accessory_type:
+        params["accessory_type"] = accessory_type
+    if query:
+        params["q"] = query
+    # Deliberately NOT in_stock_only -- the catalog authority's own stock
+    # is meaningless to us. Always fetch the full unfiltered page and
+    # filter locally, same reasoning as CATALOG_SERVICE_STORE_ID above.
+
+    try:
+        resp = requests.get(
+            f"{settings.CATALOG_SERVICE_BASE}/stores/{settings.CATALOG_SERVICE_STORE_ID}/catalog/browse/",
+            params=params, timeout=CATALOG_SERVICE_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException:
+        return Response({**empty, "error": "Catalog service unreachable"})
+
+    sell_percent = store.sell_percent_default
+    remote_results = data.get("results", [])
+    stock_by_sku = _client_stock_map(store, [r["sku"] for r in remote_results if r.get("sku")])
+
+    results = [
+        {
+            **r,
+            "estimated_sell_price": _estimate_from_market_ref(r.get("market_price"), sell_percent),
+            "stock_quantity": stock_by_sku.get(r.get("sku"), 0),
+        }
+        for r in remote_results
+    ]
+
+    if in_stock_only:
+        # Same caveat as _pokemon_browse's in_stock_only handling -- filtered
+        # after the remote's own pagination, so count/has_more reflect the
+        # filtered page, not the remote's unfiltered totals.
+        results = [r for r in results if r["stock_quantity"] > 0]
+        count = len(results)
+        has_more = False
+    else:
+        count = data.get("count", len(results))
+        has_more = data.get("has_more", False)
+
+    return Response({
+        "count": count,
+        "page": page,
+        "page_size": page_size,
+        "has_more": has_more,
+        "results": results,
+    })
+
+
 @api_view(["GET"])
 def browse_products(request, store_id):
     """GET /api/pobusa/stores/<store_id>/catalog/browse/
@@ -408,11 +521,7 @@ def browse_products(request, store_id):
     # Real per-Client stock for just this page's rows, from
     # ClientCatalogStock (Checklist Phase 4, item 12) -- not
     # CatalogProduct.stock_quantity, which is on its way out (item 13).
-    stock_by_sku = dict(
-        ClientCatalogStock.objects
-        .filter(store=store, sku__in=[p.sku for p in page_rows])
-        .values_list("sku", "quantity")
-    )
+    stock_by_sku = _client_stock_map(store, [p.sku for p in page_rows])
 
     results = [
         {

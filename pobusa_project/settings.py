@@ -99,6 +99,16 @@ else:
 # pattern CLAUDE.md's pokemart-api hard rule already established.
 CATALOG_SERVICE_BASE = os.environ.get("CATALOG_SERVICE_BASE", "").rstrip("/") or None
 
+# Only meaningful alongside CATALOG_SERVICE_BASE (item 15) -- browse_products
+# on the catalog authority's side is store-scoped purely for URL shape
+# reasons (it needs *a* valid store id to hit that endpoint at all). The
+# proxying client discards whatever store-specific estimated_sell_price/
+# stock_quantity that store's ID produces and recomputes both using its
+# OWN Store + ClientCatalogStock instead -- so this only needs to point at
+# any real, valid Store on the catalog authority, never the calling
+# Client's own. Defaults to 1 (the catalog authority's own store).
+CATALOG_SERVICE_STORE_ID = int(os.environ.get("CATALOG_SERVICE_STORE_ID", "1"))
+
 # --- PASSWORD VALIDATION ---
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
